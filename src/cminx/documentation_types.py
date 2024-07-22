@@ -421,18 +421,6 @@ class ClassDocumentation(DocumentationType):
 
 
 @dataclass
-class ModuleDocumentation(DocumentationType):
-    """
-    Represents documentation for an entire CMake module
-    """
-
-    def process(self, writer: RSTWriter) -> None:
-        module = writer.directive("module", self.name)
-        if self.doc is not None and len(self.doc) != 0:
-            module.text(self.doc)
-
-
-@dataclass
 class DanglingDoccomment(DocumentationType):
     """
     Represents a doccomment that is not attached to any other entity.
