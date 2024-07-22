@@ -43,11 +43,18 @@ class TestLexer(unittest.TestCase):
         self.reset()
         self.assertListEqual([], self.tokens)
 
+    def test_command_doccomment(self):
+        doc = '#[[[\n @module This is a doc-comment command\n\n#]]'
+        self.stream = InputStream(doc)
+        self.reset()
+        self.assertListEqual([token.type for token in self.tokens], [CMakeLexer.Command_DocBlock])
+        self.assertEqual(self.tokens[0].text, doc)
+
     def test_block_doccomment(self):
         doc = '#[[[\nThis is a doccomment\n#]]'
         self.stream = InputStream(doc)
         self.reset()
-        self.assertListEqual([token.type for token in self.tokens], [CMakeLexer.Docstring])
+        self.assertListEqual([token.type for token in self.tokens], [CMakeLexer.DocBlock])
         self.assertEqual(self.tokens[0].text, doc)
 
     def test_identifier(self):

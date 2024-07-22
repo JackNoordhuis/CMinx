@@ -19,8 +19,8 @@ import context
 
 from cminx.documenter import Documenter
 from cminx.documentation_types import FunctionDocumentation, MacroDocumentation, VariableDocumentation, \
-    GenericCommandDocumentation, ClassDocumentation, TestDocumentation, SectionDocumentation, CTestDocumentation, \
-    ModuleDocumentation
+    GenericCommandDocumentation, ClassDocumentation, TestDocumentation, SectionDocumentation, CTestDocumentation
+from cminx.documentation_command_types import ModuleDocumentationCommand
 from cminx.rstwriter import Directive, RSTWriter
 
 
@@ -41,7 +41,7 @@ class TestDocumenter(unittest.TestCase):
         for i in range(0, len(self.documenter.aggregator.documented)):
             doc = self.documenter.aggregator.documented[i]
             element = self.documenter.writer.document[i + 1]
-            if isinstance(doc, ModuleDocumentation):
+            if isinstance(doc, ModuleDocumentationCommand):
                 self.assertIsInstance(element, Directive, "Wrong RST element generated for module doc")
             elif isinstance(doc, FunctionDocumentation):
                 self.assertIsInstance(element, Directive, "Wrong RST element generated for function")
