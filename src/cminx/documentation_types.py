@@ -34,7 +34,7 @@ from .rstwriter import RSTWriter, Directive, interpreted_text
 
 class VarType(Enum):
     """The types of variables accepted by the CMake :code:`set()` command"""
-    
+
     STRING = 1
     """A String variable, ex: :code:`set(str_var "Hello")`"""
 
@@ -57,10 +57,20 @@ class DocumentationType(ABC):
     """
     name: str
     """The name of the documentation type. For functions this is the function
-    name, for variables this is the variable name, etc."""
+    name, for variables this is the variable name, command name for doc-comment
+    commands, etc."""
 
-    doc: str
-    """The full doc comment, cleaned of # characters."""
+    doc: List[str]
+    """
+    The full doc comment, split by new lines. Cleaned of # and indentation
+    whitespace characters.
+    """
+
+    def get_joined_doc(self):
+        """
+        Returns the full doc comment, cleaned of # and indentation whitespace characters
+        """
+        return "\n".join(self.doc)
 
     @abstractmethod
     def process(self, writer: RSTWriter) -> None:
@@ -102,7 +112,7 @@ class FunctionDocumentation(AbstractCommandDefinitionDocumentation):
             param_list.append("**kwargs")
         d = writer.directive(
             "function", f"{self.name}({' '.join(param_list)})")
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -123,7 +133,7 @@ class MacroDocumentation(AbstractCommandDefinitionDocumentation):
         d.directive(
             "note",
             "This is a macro, and so does not introduce a new scope.")
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -147,7 +157,7 @@ class VariableDocumentation(DocumentationType):
 
     def process(self, writer: RSTWriter) -> None:
         d = writer.directive("data", f"{self.name}")
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
         d.field("Default value", self.value)
         if self.type == VarType.STRING:
             var_type = "str"
@@ -182,7 +192,7 @@ class OptionDocumentation(VariableDocumentation):
             meaning it appears within the cache and can be
             edited on the command line by the :code:`-D` flag.
             """))
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
         d.field("Help text", self.help_text)
         d.field("Default value", self.value if self.value is not None else "OFF")
         d.field("type", self.type)
@@ -209,7 +219,7 @@ class GenericCommandDocumentation(DocumentationType):
         d.directive(
             "warning",
             "This is a generic command invocation. It is not a function or macro definition.")
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -231,7 +241,7 @@ class CTestDocumentation(DocumentationType):
             "warning",
             'This is a CTest test definition, do not call this manually. '
             'Use the "ctest" program to execute this test.')
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -261,7 +271,7 @@ class TestDocumentation(DocumentationType):
         d.directive(
             "warning",
             "This is a CMakeTest test definition, do not call this manually.")
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -281,7 +291,7 @@ class SectionDocumentation(TestDocumentation):
         d.directive(
             "warning",
             "This is a CMakeTest section definition, do not call this manually.")
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -317,6 +327,7 @@ class MethodDocumentation(DocumentationType):
             self.params) + ("[, ...]" if "args" in self.param_types else "")
         d = writer.directive(
             "py:method", f"{self.name}({params_pretty})")
+        joined_doc = self.get_joined_doc()
         if self.is_macro:
             d.directive(
                 "note",
@@ -324,13 +335,13 @@ class MethodDocumentation(DocumentationType):
         # if doc.is_constructor:
         #     info = d.directive("admonition", "info")
         #     info.text("This member is a constructor.")
-        d.text(self.doc)
+        d.text(joined_doc)
         for i in range(len(self.param_types)):
             if i >= len(self.params):
                 break
-            if f":param {self.params[i]}:" not in self.doc:
+            if f":param {self.params[i]}:" not in joined_doc:
                 d.field(f"param {self.params[i]}", "")
-            if f":type {self.params[i]}:" not in self.doc:
+            if f":type {self.params[i]}:" not in joined_doc:
                 d.field(f"type {self.params[i]}", self.param_types[i])
 
 
@@ -356,7 +367,7 @@ class AttributeDocumentation(DocumentationType):
         if self.default_value is not None:
             d.option("value", self.default_value)
 
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
 
 @dataclass
@@ -398,7 +409,7 @@ class ClassDocumentation(DocumentationType):
                     ", ".join(
                         f":class:`{superclass}`" for superclass in self.superclasses)
             d.text(bases + '\n')
-        d.text(self.doc)
+        d.text(self.get_joined_doc())
 
         if len(self.constructors) > 0:
             d.text("**Additional Constructors**")
@@ -428,4 +439,4 @@ class DanglingDoccomment(DocumentationType):
     the cleaned text of the dangling doccomment.
     """
     def process(self, writer: RSTWriter) -> None:
-        writer.text(self.doc)
+        writer.text(self.get_joined_doc())

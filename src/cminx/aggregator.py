@@ -117,21 +117,19 @@ class DocumentationAggregator(CMakeListener):
 
         self.logger: logging.Logger = logging.getLogger(__name__)
 
-    def process_function(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_function(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts function name and declared parameters.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
 
         def_params = [param for param in ctx.single_argument()]  # Extract declared function parameters
 
         if len(def_params) < 1:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             raise CMakeSyntaxException(
                 f"function() called with incorrect parameters: {ctx.single_argument()}\n\n{pretty_text}",
                 ctx.start.line
@@ -141,28 +139,31 @@ class DocumentationAggregator(CMakeListener):
             re.sub(self.settings.input.function_parameter_name_strip_regex, "", p.getText()) for p in def_params[1:]
         ]
         function_name = def_params[0].getText()
-        has_kwargs = self.settings.input.kwargs_doc_trigger_string in docstring
+
+        has_kwargs = False
+        for line in doc_lines:
+            if self.settings.input.kwargs_doc_trigger_string in line:
+                has_kwargs = True
+                break
 
         # Extracts function name and adds the completed function documentation to the 'documented' list
-        doc = FunctionDocumentation(function_name, docstring, params, has_kwargs)
+        doc = FunctionDocumentation(function_name, doc_lines, params, has_kwargs)
         self.documented.append(doc)
         self.definition_command_stack.append(DefinitionCommand(doc))
 
-    def process_macro(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_macro(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts macro name and declared parameters.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
 
         def_params = [param for param in ctx.single_argument()]  # Extract declared macro parameters
 
         if len(def_params) < 1:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             raise CMakeSyntaxException(
                 f"macro() called with incorrect parameters: {ctx.single_argument()}\n\n{pretty_text}",
                 ctx.start.line
@@ -172,14 +173,19 @@ class DocumentationAggregator(CMakeListener):
             re.sub(self.settings.input.macro_parameter_name_strip_regex, "", p.getText()) for p in def_params[1:]
         ]
         macro_name = def_params[0].getText()
-        has_kwargs = self.settings.input.kwargs_doc_trigger_string in docstring
+
+        has_kwargs = False
+        for line in doc_lines:
+            if self.settings.input.kwargs_doc_trigger_string in line:
+                has_kwargs = True
+                break
 
         # Extracts macro name and adds the completed macro documentation to the 'documented' list
-        doc = MacroDocumentation(macro_name, docstring, params, has_kwargs)
+        doc = MacroDocumentation(macro_name, doc_lines, params, has_kwargs)
         self.documented.append(doc)
         self.definition_command_stack.append(DefinitionCommand(doc))
 
-    def process_cmake_parse_arguments(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_cmake_parse_arguments(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Determines whether a documented function or macro uses *args or *kwargs.
         Accesses the last element in the :code:`definition_command_stack` to
@@ -187,7 +193,7 @@ class DocumentationAggregator(CMakeListener):
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
         if len(self.definition_command_stack) > 0:
             last_element = self.definition_command_stack[-1]
@@ -195,20 +201,18 @@ class DocumentationAggregator(CMakeListener):
                                                            AbstractCommandDefinitionDocumentation):
                 last_element.documentation.has_kwargs = True
 
-    def process_ct_add_test(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_ct_add_test(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts test name and declared parameters.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
         params = [param.getText() for param in ctx.single_argument()]  # Extract parameters
 
         if len(params) < 2:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"ct_add_test() called with incorrect parameters: {params}\n\n{pretty_text}")
             return
@@ -221,9 +225,7 @@ class DocumentationAggregator(CMakeListener):
                 try:
                     name = params[i + 1]
                 except IndexError:
-                    pretty_text = docstring
-                    pretty_text += f"\n{ctx.getText()}"
-
+                    pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
                     self.logger.error(
                         f"ct_add_test() called with incorrect parameters: {params}\n\n{pretty_text}")
                     return
@@ -231,24 +233,22 @@ class DocumentationAggregator(CMakeListener):
             if param.upper() == "EXPECTFAIL":
                 expect_fail = True
 
-        test_doc = TestDocumentation(name, docstring, expect_fail)
+        test_doc = TestDocumentation(name, doc_lines, expect_fail)
         self.documented.append(test_doc)
         self.documented_awaiting_function_def = test_doc
 
-    def process_ct_add_section(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_ct_add_section(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts section name and declared parameters.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
         params = [param.getText() for param in ctx.single_argument()]  # Extract parameters
 
         if len(params) < 2:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"ct_add_section() called with incorrect parameters: {params}\n\n{pretty_text}")
             return
@@ -261,33 +261,29 @@ class DocumentationAggregator(CMakeListener):
                 try:
                     name = params[i + 1]
                 except IndexError:
-                    pretty_text = docstring
-                    pretty_text += f"\n{ctx.getText()}"
-
+                    pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
                     self.logger.error(f"ct_add_section() called with incorrect parameters: {params}\n\n{pretty_text}")
                     return
 
             if param.upper() == "EXPECTFAIL":
                 expect_fail = True
 
-        section_doc = SectionDocumentation(name, docstring, expect_fail)
+        section_doc = SectionDocumentation(name, doc_lines, expect_fail)
         self.documented.append(section_doc)
         self.documented_awaiting_function_def = section_doc
 
-    def process_set(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_set(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts variable name and values from the documented set command.
         Also determines the type of set command/variable: String, List, or Unset.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
 
         if len(ctx.single_argument()) < 1:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"set() called with incorrect parameters: {ctx.single_argument()}\n\n{pretty_text}")
             return
@@ -301,7 +297,7 @@ class DocumentationAggregator(CMakeListener):
             values = [val.getText()
                       for val in ctx.single_argument()[1:]]
             self.documented.append(VariableDocumentation(
-                varname, docstring, VarType.LIST, " ".join(values)))
+                varname, doc_lines, VarType.LIST, " ".join(values)))
         elif arg_len == 1:  # String
             value = ctx.single_argument()[1].getText()
 
@@ -312,25 +308,23 @@ class DocumentationAggregator(CMakeListener):
             if value[-1] == '"':
                 value = value[:-1]
             self.documented.append(VariableDocumentation(
-                varname, docstring, VarType.STRING, value))
+                varname, doc_lines, VarType.STRING, value))
         else:  # Unset
             self.documented.append(VariableDocumentation(
-                varname, docstring, VarType.UNSET, None))
+                varname, doc_lines, VarType.UNSET, None))
 
-    def process_cpp_class(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_cpp_class(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts the name and the declared superclasses from the documented
         cpp_class command.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
 
         if len(ctx.single_argument()) < 1:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(f"cpp_class() called with incorrect parameters: {ctx.single_argument()}\n\n{pretty_text}")
             return
 
@@ -339,7 +333,7 @@ class DocumentationAggregator(CMakeListener):
 
         name = params[0]
         superclasses = params[1:]
-        clazz = ClassDocumentation(name, docstring, superclasses, [], [], [], [])
+        clazz = ClassDocumentation(name, doc_lines, superclasses, [], [], [], [])
         self.documented.append(clazz)
 
         # If we are currently processing another class, then this one
@@ -351,7 +345,7 @@ class DocumentationAggregator(CMakeListener):
         # until we reach cpp_end_class()
         self.documented_classes_stack.append(clazz)
 
-    def process_cpp_member(self, ctx: CMakeParser.Command_invocationContext, docstring: str,
+    def process_cpp_member(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str],
                            is_constructor: bool = False) -> None:
         """
         Extracts the method name and declared parameter types from the documented cpp_member
@@ -359,15 +353,13 @@ class DocumentationAggregator(CMakeListener):
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
 
         :param is_constructor: Whether the member is a constructor, this parameter is reflected in the generated
         MethodDocumentation.
         """
         if len(ctx.single_argument()) < 2:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"cpp_class() called with incorrect parameters: {ctx.single_argument()}\n\n{pretty_text}")
             return
@@ -375,8 +367,7 @@ class DocumentationAggregator(CMakeListener):
         params = [param.getText()
                   for param in ctx.single_argument()]
         if len(self.documented_classes_stack) <= 0:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             called_type = "cpp_constructor()" if is_constructor else "cpp_member()"
 
             self.logger.error(
@@ -392,32 +383,30 @@ class DocumentationAggregator(CMakeListener):
         name = params[0]
         param_types = params[2:] if len(params) > 2 else []
         method_doc = MethodDocumentation(
-            name, docstring, parent_class, param_types, [], is_constructor)
+            name, doc_lines, parent_class, param_types, [], is_constructor)
         if is_constructor:
             clazz.constructors.append(method_doc)
         else:
             clazz.members.append(method_doc)
         self.documented_awaiting_function_def = method_doc
 
-    def process_cpp_constructor(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_cpp_constructor(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Alias for calling process_cpp_member() with is_constructor=True.
         """
-        self.process_cpp_member(ctx, docstring, is_constructor=True)
+        self.process_cpp_member(ctx, doc_lines, is_constructor=True)
 
-    def process_cpp_attr(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_cpp_attr(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts the name and any default values from the documented cpp_attr
         command.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
         if len(ctx.single_argument()) < 2:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"cpp_attr() called with incorrect parameters: {ctx.single_argument()}\n\n{pretty_text}")
             return
@@ -425,9 +414,7 @@ class DocumentationAggregator(CMakeListener):
         params = [param.getText()
                   for param in ctx.single_argument()]
         if len(self.documented_classes_stack) <= 0:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"cpp_attr() called outside of cpp_class() definition: {params}\n\n{pretty_text}")
             return
@@ -440,9 +427,9 @@ class DocumentationAggregator(CMakeListener):
         name = params[1]
         default_values = params[2] if len(params) > 2 else None
         clazz.attributes.append(AttributeDocumentation(
-            name, docstring, parent_class, default_values))
+            name, doc_lines, parent_class, default_values))
 
-    def process_add_test(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_add_test(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts information from a CTest add_test() command.
         Note: this is not the processor for the CMakeTest ct_add_test() command,
@@ -450,14 +437,12 @@ class DocumentationAggregator(CMakeListener):
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
         params = [param.getText() for param in ctx.single_argument()]  # Extract parameters
 
         if len(params) < 2:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"ct_add_section() called with incorrect parameters: {params}\n\n{pretty_text}")
             return
@@ -469,35 +454,31 @@ class DocumentationAggregator(CMakeListener):
                 try:
                     name = params[i + 1]
                 except IndexError:
-                    pretty_text = docstring
-                    pretty_text += f"\n{ctx.getText()}"
-
+                    pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
                     self.logger.error(f"add_test() called with incorrect parameters: {params}\n\n{pretty_text}")
                     return
 
-        test_doc = CTestDocumentation(name, docstring, [p for p in params if p != name and p != "NAME"])
+        test_doc = CTestDocumentation(name, doc_lines, [p for p in params if p != name and p != "NAME"])
         self.documented.append(test_doc)
 
-    def process_option(self, ctx: CMakeParser.Command_invocationContext, docstring: str) -> None:
+    def process_option(self, ctx: CMakeParser.Command_invocationContext, doc_lines: List[str]) -> None:
         """
         Extracts information from an :code:`option()` command and creates
         an OptionDocumentation from it. It extracts the option name,
         the help text, and the default value if any.
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned doc-comment lines.
         """
         params = [param.getText() for param in ctx.single_argument()]  # Extract parameters
         if len(params) < 2 or len(params) > 3:
-            pretty_text = docstring
-            pretty_text += f"\n{ctx.getText()}"
-
+            pretty_text = "\n".join(doc_lines) + f"\n{ctx.getText()}"
             self.logger.error(
                 f"ct_add_section() called with incorrect parameters: {params}\n\n{pretty_text}")
             return
         option_doc = OptionDocumentation(
             params[0],
-            docstring,
+            doc_lines,
             "bool",
             params[2] if len(params) == 3 else None,
             params[1]
@@ -505,7 +486,7 @@ class DocumentationAggregator(CMakeListener):
         self.documented.append(option_doc)
 
     def process_generic_command(self, command_name: str, ctx: CMakeParser.Command_invocationContext,
-                                docstring: str) -> None:
+                                doc_lines: List[str]) -> None:
         """
         Extracts command invocation and arguments for a documented command that does not
         have a dedicated processor function.
@@ -514,7 +495,7 @@ class DocumentationAggregator(CMakeListener):
 
         :param ctx: Documented command context. Constructed by the Antlr4 parser.
 
-        :param docstring: Cleaned docstring.
+        :param doc_lines: Cleaned docstring.
         """
 
         args = ctx.single_argument() + ctx.compound_argument()
