@@ -18,8 +18,9 @@ Changes:
 	Renamed from file to cmake_file to avoid conflict with Python
 	Added documented_command to list of expected parser rules
 	Added bracket_doccomment to parser rules
-	Added Docstring to lexer rules
 	Added bracket_doccomment to top-level parse rule, enabling dangling doccomments
+	Added Module_DocBlock, NoDoc_DocBlock, Command_DocBlock to lexer rules
+	Added nodoc_doccomment as alternative to bracket_comment for documented_command parser rule
 */
 
 /*Begin CMinx*/
@@ -30,40 +31,52 @@ Changes:
     with the desired precedence.
 */
 cmake_file
-	: documented_module? (documented_command | command_invocation | bracket_doccomment)* EOF
+	: (documented_command | command_invocation | command_doccomment | bracket_doccomment)* EOF
 	;
 
 
+/*
+    WARNING: This grammar is also ambiguous because of the command_doccomment alternative.
+*/
 documented_command
-	: bracket_doccomment command_invocation
+	: (command_doccomment | bracket_doccomment) command_invocation
 	;
 
-documented_module
-    : Module_docstring
+command_doccomment
+    : Command_DocBlock
     ;
 
 bracket_doccomment
-    : Docstring
+    : DocBlock
     ;
 
-Module_docstring
-    : Doccomment_start Space? '@module' (Space Unquoted_argument)? .*? Blockcomment_end
+Command_DocBlock
+    : DocBlock_Start .*? Command_DocString .*? DocBlock_End
     ;
 
-Docstring
-        : Doccomment_start Space? .*? Blockcomment_end
-	;
-
-
-Doccomment_start
-    : '#[[['
+fragment
+Command_DocString
+    : ~[\\] '@' DocBlock_Command_Identifier
     ;
 
-Blockcomment_end
-    : '#]]'
+fragment
+DocBlock_Command_Identifier
+    : [A-Za-z\-][A-Za-z0-9\-]*
     ;
 
+DocBlock
+    : DocBlock_Start .*? DocBlock_End
+    ;
 
+fragment
+DocBlock_Start
+    : Space*? '#[[['
+    ;
+
+fragment
+DocBlock_End
+    : Space*? '#]]'
+    ;
 
 /*End Cminx*/
 

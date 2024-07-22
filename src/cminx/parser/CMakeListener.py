@@ -1,6 +1,6 @@
-# Generated from CMake.g4 by ANTLR 4.7.2
+# Generated from /Users/jack/Development/python/CMinx/src/cminx/parser/CMake.g4 by ANTLR 4.13.1
 from antlr4 import *
-if __name__ is not None and "." in __name__:
+if "." in __name__:
     from .CMakeParser import CMakeParser
 else:
     from CMakeParser import CMakeParser
@@ -26,12 +26,12 @@ class CMakeListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by CMakeParser#documented_module.
-    def enterDocumented_module(self, ctx:CMakeParser.Documented_moduleContext):
+    # Enter a parse tree produced by CMakeParser#command_doccomment.
+    def enterCommand_doccomment(self, ctx:CMakeParser.Command_doccommentContext):
         pass
 
-    # Exit a parse tree produced by CMakeParser#documented_module.
-    def exitDocumented_module(self, ctx:CMakeParser.Documented_moduleContext):
+    # Exit a parse tree produced by CMakeParser#command_doccomment.
+    def exitCommand_doccomment(self, ctx:CMakeParser.Command_doccommentContext):
         pass
 
 
@@ -71,3 +71,5 @@ class CMakeListener(ParseTreeListener):
         pass
 
 
+
+del CMakeParser

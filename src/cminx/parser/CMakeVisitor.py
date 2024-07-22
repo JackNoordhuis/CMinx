@@ -1,6 +1,6 @@
-# Generated from CMake.g4 by ANTLR 4.7.2
+# Generated from /Users/jack/Development/python/CMinx/src/cminx/parser/CMake.g4 by ANTLR 4.13.1
 from antlr4 import *
-if __name__ is not None and "." in __name__:
+if "." in __name__:
     from .CMakeParser import CMakeParser
 else:
     from CMakeParser import CMakeParser
@@ -19,8 +19,8 @@ class CMakeVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
-    # Visit a parse tree produced by CMakeParser#documented_module.
-    def visitDocumented_module(self, ctx:CMakeParser.Documented_moduleContext):
+    # Visit a parse tree produced by CMakeParser#command_doccomment.
+    def visitCommand_doccomment(self, ctx:CMakeParser.Command_doccommentContext):
         return self.visitChildren(ctx)
 
 
