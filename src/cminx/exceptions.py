@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
+from dataclasses import dataclass
 
 
-@dataclasses.dataclass
+@dataclass
 class CMakeSyntaxException(Exception):
     """
     Denotes a syntax error in the CMake source code.
@@ -33,4 +33,14 @@ class CMakeSyntaxException(Exception):
     The line in the CMake file where the exception was detected.
     Note that this may not be the line where the error is actually located
     in the source, only where the lexer or parser detected an error.
+    """
+
+
+@dataclass
+class DocumentationCommandSyntaxException(CMakeSyntaxException):
+    """
+    Denotes a syntax error in a CMinx doc-comment command.
+    CMinx behaviour of ill-formed doc-comment commands is not
+    guaranteed to be consistent in all cases, hence encountering
+    this exception is expected to halt the program.
     """

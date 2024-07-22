@@ -34,15 +34,107 @@ from antlr4 import ParserRuleContext
 
 from .documentation_types import AttributeDocumentation, FunctionDocumentation, MacroDocumentation, \
     VariableDocumentation, GenericCommandDocumentation, ClassDocumentation, TestDocumentation, SectionDocumentation, \
-    MethodDocumentation, VarType, CTestDocumentation, ModuleDocumentation, AbstractCommandDefinitionDocumentation, \
-    OptionDocumentation, DanglingDoccomment, DocumentationType
+    MethodDocumentation, VarType, CTestDocumentation, AbstractCommandDefinitionDocumentation, OptionDocumentation, \
+    DocumentationType, DanglingDoccomment
 
-from .exceptions import CMakeSyntaxException
+from .documentation_command_types import AbstractDocumentationCommand, ModuleDocumentationCommand, \
+    NoDocDocumentationCommand, DocumentationHelpers
+
+from .exceptions import CMakeSyntaxException, DocumentationCommandSyntaxException
 from .parser.CMakeListener import CMakeListener
 # Annoyingly, the Antl4 Python libraries use camelcase since it was originally Java, so we have convention
 # inconsistencies here
 from .parser.CMakeParser import CMakeParser
 from cminx import Settings
+
+
+def get_cmake_command_name(ctx: CMakeParser.Command_invocationContext) -> str:
+    return ctx.Identifier().getText().lower()
+
+
+def clean_comment_lines(comment_ctx: CMakeParser.Bracket_doccommentContext | CMakeParser.Command_doccommentContext
+                        ) -> List[str]:
+    """
+    Prepares comment for placement into generated RST.
+    Strips start and end identifiers along with leading whitespace (before #), first
+    # character (with following whitespace if found) from each line.
+
+    A fast path is used to determine a 'global' whitespace offset for indented comments.
+    Determines leading whitespace by counting the number of whitespace characters before
+    a # (beginning of comment lines) character is found. If the number of whitespace
+    characters is equal for the first and last lines, then the offset is used for every line.
+    Otherwise, each lines characters are iterated over until the first non-whitespace
+    character is found.
+
+    :param comment_ctx: Raw comment string as found in CMake source files.
+    """
+    raw_lines = comment_ctx.getText().split("\n")
+
+    global_whitespace_offset = 0  # number of chars before '#' in last line
+    for char in raw_lines[-1]:
+        if char == "#":
+            break
+        global_whitespace_offset += 1
+
+    if len(raw_lines) > 1:
+        last_line_whitespace_offset = 0  # number of chars before '#' in first line
+        for char in raw_lines[0]:
+            if char == "#":
+                break
+            last_line_whitespace_offset += 1
+        if last_line_whitespace_offset == global_whitespace_offset:
+            global_whitespace_offset = global_whitespace_offset
+        else:
+            global_whitespace_offset = 0  # beginning and end lines have different indentation
+
+    cleaned_lines: List[str] = []
+    for raw_line in raw_lines:
+        start_offset = global_whitespace_offset  # number of chars to strip from start of raw line
+        end_offset = 0  # number of chars to strip from end of raw line
+        end_index = len(raw_line)
+        for char_index in range(global_whitespace_offset,
+                                end_index):  # start searching for '#' from the global offset
+            first_char = raw_line[char_index]
+            if first_char != "#":
+                if first_char == " " or first_char == "\t":
+                    start_offset += 1  # strip leading whitespace char
+                    continue  # skip to next char
+                break  # inside comment
+            start_offset += 1  # strip '#' char
+            if start_offset >= end_index:
+                break  # blank line
+            second_char = raw_line[start_offset]
+            if second_char == " " or second_char == "\t":
+                start_offset += 1  # strip whitespace char following '#'
+            elif end_index >= (start_offset + 1) and (second_char == "]" and raw_line[start_offset + 1] == "]"):
+                start_offset += 2  # strip end identifier char sequence
+            elif end_index >= (start_offset + 2) and (second_char == "[" and raw_line[start_offset + 1] == "[" and
+                                                      raw_line[start_offset + 2] == "["):
+                start_offset += 3  # strip start identifier char sequence
+                if end_index >= (start_offset + 1) and raw_line[start_offset + 1] == " ":
+                    start_offset += 1  # strip whitespace char following start identifier
+                if end_index >= (start_offset + 2) and (raw_line[end_index - 2] == "#" and
+                                                        raw_line[end_index - 1] == "]" and raw_line[
+                                                            end_index] == "]"):
+                    end_offset -= 3  # strip single line closing identifier
+                    if raw_line[-4] == " ":
+                        end_offset -= 1  # strip single line closing identifier leading space
+            break  # found start of line contents
+        if start_offset >= end_index:
+            cleaned_lines.append("")  # line processed
+        else:
+            new_start_index = max(start_offset, 0)
+            new_end_index = max(end_index - end_offset, new_start_index)
+            cleaned_lines.append(raw_line[new_start_index:new_end_index])  # line processed
+
+    # Pop empty lines from beginning of list. Most comments will always have an
+    # empty first line due to the opening identifier being stripped.
+    while len(cleaned_lines) > 0:
+        if len(cleaned_lines[0].strip(" \t\n")) != 0:
+            break
+        cleaned_lines.pop(0)
+
+    return cleaned_lines
 
 
 @dataclass
@@ -99,6 +191,13 @@ class DocumentationAggregator(CMakeListener):
         """
         A variable containing a documented command such as cpp_member() that is awaiting its function/macro
         definition
+        """
+
+        self.documentation_command_stack: List[AbstractDocumentationCommand] = []
+        """
+        A stack containing the currently active documentation commands. A documentation
+        command may affect multiple CMake command invocations or require follow lines
+        providing more context, in these cases the dataclass will be appended to the stack.
         """
 
         self.definition_command_stack: List[DefinitionCommand] = []
@@ -501,35 +600,90 @@ class DocumentationAggregator(CMakeListener):
         args = ctx.single_argument() + ctx.compound_argument()
         args = [val.getText() for val in args]
         self.documented.append(GenericCommandDocumentation(
-            command_name, docstring, args))
+            command_name, doc_lines, args))
 
-    @staticmethod
-    def clean_doc_lines(lines: List[str]) -> str:
-        # If last line starts with leading spaces or tabs, count how many and remove from all lines
-        num_spaces = 0
-        for i in range(0, len(lines[-1])):
-            if lines[-1][i] != "#":
-                num_spaces = num_spaces + 1
+    def process_command_doccomment(self, ctx: CMakeParser.Command_doccommentContext,
+                                   cleaned_lines: List[str],
+                                   invocation_ctx: CMakeParser.Command_invocationContext | None = None) -> bool:
+        """
+        TODO: Documentation description
+        :param ctx: Documented command context. Constructed by the Antlr4 parser.
+        :param invocation_ctx: CMake command invocation context. Constructed by the Antlr4 parser.
+                               If value is `None` the comment is considered dangling/free.
+        :param cleaned_lines: Cleaned doc-comment lines. Will be extracted from the comment context if value is `None`.
+
+        :return: Returns `True` if the commands were processed without consuming the invocation context.
+                 Returns `False` if the commands consumed the invocation context while being processed.
+        """
+        cleaned_lines = cleaned_lines if cleaned_lines is not None else clean_comment_lines(ctx)
+        found_commands = DocumentationHelpers.extract_documentation_commands(
+            cleaned_lines,
+            get_cmake_command_name(invocation_ctx) if not (invocation_ctx is None) else ""
+        )
+        unrelated_to_invocation = invocation_ctx is None
+        for command in found_commands:
+            if command.preprocess(ctx, self.documentation_command_stack, self.documented, self.consumed,
+                                  invocation_ctx):
+                unrelated_to_invocation = True
+
+        return unrelated_to_invocation
+
+    def process_bracket_doccomment(self, ctx: CMakeParser.Bracket_doccommentContext,
+                                   invocation_ctx: CMakeParser.Command_invocationContext | None = None,
+                                   cleaned_lines: List[str] | None = None) -> bool:
+        """
+        :param ctx: Bracket doc-comment context. Constructed by the Antlr4 parser.
+        :param invocation_ctx: Command invocation context. Constructed by the Antlr4 parser.
+        :param cleaned_lines: List of commands found in the doc-comment.
+
+        :return: Returns `True` if the comment was processed without consuming the invocation context.
+                 Returns `False` if the comment consumed the invocation context while being processed.
+        """
+        if invocation_ctx is None:
+            self.consumed.append(ctx)
+            self.logger.warning(
+                "Ignoring dangling doc-comment (no CMake command invocation to document.) "
+                "Generated RST may change depending on CMinx version."
+            )
+            return True
+        return False
+
+    def process_cmake_invocation(self, ctx: CMakeParser.Command_invocationContext,
+                                 cleaned_lines: List[str] | None = None) -> bool:
+        """
+        :param ctx: Command invocation context. Constructed by the Antlr4 parser.
+        :param cleaned_lines: Optional parameter used to forward the cleaned lines when invoked by a documented command.
+        """
+        if ctx in self.consumed:
+            return False  # was already handled
+
+        self.consumed.append(ctx)  # consume CMake command invocation node
+        cmake_command = get_cmake_command_name(ctx)
+
+        if len(self.documentation_command_stack) > 0:
+            no_doc_stack = DocumentationHelpers.commands_of_type(NoDocDocumentationCommand,
+                                                                 self.documentation_command_stack)
+            if len(no_doc_stack) > 0:
+                # if DocumentationHelpers.starts_invocation_block(cmake_command):
+                #     # append a new no-doc command to the stack when the previous has child invocation blocks
+                #     new_no_doc = copy(no_doc_stack[-1])
+                #     new_no_doc.cmake_command = cmake_command
+                #     self.documentation_command_stack.append(new_no_doc)
+                return True  # handled by no-doc command
+
+        cleaned_lines = [] if cleaned_lines is None else cleaned_lines
+
+        try:
+            if f"process_{cmake_command}" in dir(self):
+                getattr(self, f"process_{cmake_command}")(ctx, cleaned_lines)
             else:
-                break
+                self.process_generic_command(cmake_command, ctx, cleaned_lines)
+        except Exception as e:
+            line_num = ctx.start.line
+            self.logger.error(f"Caught exception while processing command beginning at line number {line_num}")
+            raise e
 
-        cleaned_lines = []
-        for line in lines:
-            # Remove global indent from left side
-            cleaned_line = line[num_spaces:]
-            # Remove all hash marks and brackets from the left side only
-            cleaned_line = cleaned_line.lstrip("#[]")
-            # String is not empty and first character is a space
-            if cleaned_line and cleaned_line[0] == " ":
-                # Cleans optional singular space
-                cleaned_line = cleaned_line[1:]
-            cleaned_lines.append(cleaned_line)
-        cleaned_lines[-1] = cleaned_lines[-1].rstrip("#]")
-        cleaned_doc = "\n".join(cleaned_lines)
-        if cleaned_doc.startswith("\n"):
-            cleaned_doc = cleaned_doc[1:]
-
-        return cleaned_doc
+        return True  # notify caller the
 
     def enterDocumented_command(self, ctx: CMakeParser.Documented_commandContext) -> None:
         """
@@ -541,48 +695,107 @@ class DocumentationAggregator(CMakeListener):
 
         :raise NotImplementedError: If no processor can be found for the command that was documented.
         """
-        self.consumed.append(ctx.bracket_doccomment())
-        text = ctx.bracket_doccomment().getText()
-        lines = text.split("\n")
+        self.consumed.append(ctx)  # consume parent node of doc-comment + command invocation
 
-        cleaned_doc = DocumentationAggregator.clean_doc_lines(lines)
+        is_command: bool = (
+            ctx.command_doccomment() is not None and
+            not ctx.command_doccomment().isEmpty()
+        )  # check is needed due to grammar ambiguity
+        comment_ctx: CMakeParser.Command_doccommentContext | CMakeParser.Bracket_doccommentContext = (
+            ctx.command_doccomment() if is_command else ctx.bracket_doccomment()
+        )
+        self.consumed.append(comment_ctx)  # consume doc-comment/bracket-comment node
+        cleaned_lines = clean_comment_lines(comment_ctx)
 
+        invocation_ctx: CMakeParser.Command_invocationContext = ctx.command_invocation()
         try:
-            command = ctx.command_invocation().Identifier().getText().lower()
-            self.consumed.append(ctx.command_invocation())
-            self.consumed.append(ctx.bracket_doccomment())
-            if f"process_{command}" in dir(self):
-                getattr(self, f"process_{command}")(ctx.command_invocation(), cleaned_doc)
-            else:
-                self.process_generic_command(command, ctx.command_invocation(), cleaned_doc)
+            if is_command:
+                documented_size_before = len(self.documented)
+                if self.process_command_doccomment(comment_ctx, cleaned_lines, invocation_ctx):
+                    return  # the command processing handles the invocation node processing
+                if len(self.documented) > documented_size_before:
+                    last_documented = self.documented[-1]
+                    if isinstance(last_documented, AbstractDocumentationCommand):
+                        # use the modified comment from the doc-comment command for generated output
+                        cleaned_lines = self.documented[-1].doc
+                        # and remove the temporary command object from the documented stack
+                        self.documented.pop()
+
+            if not self.process_cmake_invocation(invocation_ctx, cleaned_lines) and ctx not in self.consumed:
+                self.consumed.append(invocation_ctx)
         except Exception as e:
             line_num = ctx.command_invocation().start.line
+            type_name: str = " command " if is_command else " "
             self.logger.error(
-                f"Caught exception while processing documented command beginning at line number {line_num}"
+                f"Caught exception while processing{type_name}doc-comment beginning at line number {line_num}"
             )
             raise e
 
+    def enterCommand_doccomment(self, ctx: CMakeParser.Command_doccommentContext) -> None:
+        """
+        Handles doc-comment commands without a CMake command invocation. This path is expected
+        for top-level `@module` and `@no-doc` commands. Any other command is ignored, this may
+        change in future CMinx versions.
+
+        :param ctx: Documentation command comment context. Constructed by the Antlr4 parser.
+        """
+        if ctx in self.consumed:
+            return  # doc-comment is attached to a CMake command invocation
+
+        self.consumed.append(ctx)
+        cleaned_lines = clean_comment_lines(ctx)
+
+        # process the doc-comment command as free/dangling
+        documented_size_before = len(self.documented)
+        try:
+            self.process_command_doccomment(ctx, cleaned_lines, None)
+        except Exception as e:
+            self.logger.error(f"Caught exception while processing command doc-comment beginning on line {ctx.start.line}.")
+            raise e
+
+        if len(self.documented) == documented_size_before:
+            # the doc-comment command should not appear here
+            self.logger.warning(f"Detected dangling command doc-comment beginning on line {ctx.start.line}, ignoring. "
+                                "RST may change depending on CMinx version.")
+            # self.documented.append(DanglingDoccomment("", cleaned_lines))
+
+    def enterBracket_doccomment(self, ctx: CMakeParser.Bracket_doccommentContext):
+        """
+        Handles doc-comments with no CMake command invocation (dangling.)
+        Current behaviour ignores comment contents, this may change in future CMinx versions.
+
+        :param ctx: Documentation command comment context. Constructed by the Antlr4 parser.
+        """
+        if ctx in self.consumed:
+            return  # doc-comment is attached to a CMake command invocation
+
+        self.consumed.append(ctx)
+        self.logger.warning(f"Detected dangling doc-comment on line {ctx.start.line}, ignoring. "
+                            "RST may change depending on CMinx version.")
+        # self.documented.append(DanglingDoccomment("", clean_comment_lines(ctx)))
+
     def enterCommand_invocation(self, ctx: CMakeParser.Command_invocationContext) -> None:
         """
-        Visitor for all other commands, used for locating position-dependent
-        elements of documented commands, such as cpp_end_class() that pops the class stack,
-        or a function or method definition for cpp_member().
+        Visitor for all other commands, used for locating position-dependent elements
+        of documented commands.
+
+        * `endfunction()`/`endmacro()` that pops the stack element created by
+          the matching `function()`/`macro()` to 'attach' preceding invocations.
+
+        * `cpp_end_class()` that pops the stack element created by `cpp_class()` which
+          is used to 'attach' preceding invocations to the class definition.
+
+        :param ctx: Command invocation context. Constructed by the Antlr4 parser.
         """
-
-        command = ctx.Identifier().getText().lower()
-
+        cmake_command = get_cmake_command_name(ctx)
         try:
-            if command == "cpp_class" and not self.settings.input.include_undocumented_cpp_class:
-                # This ensures the stack doesn't fall into an inconsistent state
-                self.documented_classes_stack.append(None)
-            elif command == "cpp_end_class":
-                self.documented_classes_stack.pop()
-            elif command == "cmake_parse_arguments":
-                self.process_cmake_parse_arguments(ctx, "")
-            elif ((command == "function"
-                   or command == "macro")
-                  and self.documented_awaiting_function_def is not None):
-                # We've found the function/macro def that the previous documented command needed
+            # This switch/match is a hot path so check most common cases first
+            if ((cmake_command == "endfunction" or cmake_command == "endmacro") and
+                    len(self.definition_command_stack) > 0):
+                self.definition_command_stack.pop()
+            elif ((cmake_command == "function" or cmake_command == "macro") and
+                    self.documented_awaiting_function_def is not None):
+                # We've found the function/macro def that the previous documented cmake_command needed
                 params = [param.getText()
                           for param in ctx.single_argument()]
                 if isinstance(self.documented_awaiting_function_def, MethodDocumentation):
@@ -591,7 +804,7 @@ class DocumentationAggregator(CMakeListener):
                         ctx.single_argument()
                     ]
 
-                self.documented_awaiting_function_def.is_macro = command == "macro"
+                self.documented_awaiting_function_def.is_macro = cmake_command == "macro"
 
                 # Ignore function name and self param
                 if len(params) > 2:
@@ -603,31 +816,37 @@ class DocumentationAggregator(CMakeListener):
 
                 # Allows scanning for cmake_parse_arguments() inside other types of definitions
                 self.definition_command_stack.append(DefinitionCommand(None, False))
-            elif command == "endfunction" or command == "endmacro":
-                self.definition_command_stack.pop()
-            elif command != "set" and f"process_{command}" in dir(self) and ctx not in self.consumed:
-                if self.settings.input.__dict__[f"include_undocumented_{command}"]:
-                    getattr(self, f"process_{command}")(ctx, "")
-                elif command == "function" or command == "macro":
-                    self.definition_command_stack.append(DefinitionCommand(None, False))
-
+            elif cmake_command == "cmake_parse_arguments":
+                self.process_cmake_parse_arguments(ctx, [])
+            elif cmake_command == "cpp_end_class":
+                # Stop associating invocations with the class
+                self.documented_classes_stack.pop()
+            elif cmake_command == "cpp_class" and not self.settings.input.include_undocumented_cpp_class:
+                # Class definitions rarely lack documentation so this check last. Ensures the stack
+                # doesn't fall into an inconsistent state when no doc-comment is found.
+                self.documented_classes_stack.append(None)
+            elif cmake_command != "set" and f"process_{cmake_command}" in dir(self):
+                # Fall-through case: handles any invocation without a doc-comment.
+                # Any cases handled before this will never be included in generated
+                # documentation, regardless of `include_undocumented` configuration.
+                if ctx not in self.consumed:
+                    if self.settings.input.__dict__[f"include_undocumented_{cmake_command}"]:
+                        if not self.process_cmake_invocation(ctx) and ctx not in self.consumed:
+                            self.consumed.append(ctx)  # consume command invocation node
+                    elif cmake_command == "function" or cmake_command == "macro":
+                        self.definition_command_stack.append(DefinitionCommand(None, False))
+                        self.consumed.append(ctx)  # consume command invocation node
         except Exception as e:
-            line_num = ctx.start.line
-            self.logger.error(f"Caught exception while processing command beginning at line number {line_num}")
+            self.logger.error(f"Caught exception while processing command beginning at line number {ctx.start.line}")
             raise e
 
-    def enterDocumented_module(self, ctx: CMakeParser.Documented_moduleContext) -> None:
-        text = ctx.Module_docstring().getText()
-        cleaned_lines = DocumentationAggregator.clean_doc_lines(text.split("\n")).split("\n")
-        module_name = cleaned_lines[0].replace("@module", "").strip()
-        doc = "\n".join(cleaned_lines[1:])
-        self.documented.append(ModuleDocumentation(module_name, doc))
-
-    def enterBracket_doccomment(self, ctx: CMakeParser.Bracket_doccommentContext) -> None:
-        if ctx not in self.consumed:
-            # text = ctx.Docstring().getText()
-            # cleaned_lines = DocumentationAggregator.clean_doc_lines(text.split("\n")).split("\n")
-            # self.documented.append(DanglingDoccomment("", "\n".join(cleaned_lines)))
-            self.logger.warning(
-                f"Detected dangling doccomment, ignoring. RST may change depending on CMinx version."
-            )
+    def exitCommand_invocation(self, ctx: CMakeParser.Command_invocationContext):
+        if len(self.documentation_command_stack) <= 0:
+            return
+        no_doc_stack = DocumentationHelpers.commands_of_type(NoDocDocumentationCommand,
+                                                             self.documentation_command_stack)
+        if len(no_doc_stack) > 0:
+            active_command = no_doc_stack[-1]
+            if (active_command.cmake_command == get_cmake_command_name(ctx) or active_command.cmake_command ==
+                    DocumentationHelpers.start_invocation_block_command_for(get_cmake_command_name(ctx))):
+                self.documentation_command_stack.pop()
