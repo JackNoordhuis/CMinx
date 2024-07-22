@@ -27,7 +27,8 @@ from antlr4 import *
 
 from .aggregator import DocumentationAggregator
 from cminx import Settings
-from .documentation_types import DocumentationType, ModuleDocumentation
+from .documentation_types import DocumentationType
+from .documentation_command_types import ModuleDocumentationCommand
 from .parser import ParserErrorListener
 from .parser.CMakeLexer import CMakeLexer
 from .parser.CMakeParser import CMakeParser
@@ -128,16 +129,17 @@ class Documenter(object):
         :param docs: List of documentation objects.
         """
 
-        module_docs = [x for x in docs if isinstance(x, ModuleDocumentation)]
+        module_docs = [x for x in docs if isinstance(x, ModuleDocumentationCommand)]
 
         if len(module_docs) == 0:
-            docs.insert(0, ModuleDocumentation(self.module_name, ""))
+            docs.insert(0, ModuleDocumentationCommand.default_module(self.module_name))
 
         for module_doc in module_docs:
-            if module_doc.name is None or len(module_doc.name) == 0:
-                module_doc.name = self.module_name
+            module_name = module_doc.module_name()
+            if module_name is None:
+                module_doc.set_module_name(self.module_name)
             else:
-                self.writer.title = module_doc.name
+                self.writer.title = module_name
 
         for doc in docs:
             doc.process(self.writer)
