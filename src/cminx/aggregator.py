@@ -137,6 +137,22 @@ def clean_comment_lines(comment_ctx: CMakeParser.Bracket_doccommentContext | CMa
     return cleaned_lines
 
 
+def clean_escaped_command_lines(lines: List[str]):
+    for line_index in range(0, max(len(lines), 1)):
+        line_end_index = max(len(lines[line_index]), 1)
+        if line_end_index < 2:
+            continue  # ignore lines with less than 2 chars
+        for char_index in range(0, line_end_index):
+            if lines[line_index][char_index] == " " or lines[line_index][char_index] == "\t":
+                continue
+            elif lines[line_index][char_index] == "\\" and line_index >= char_index + 1:
+                if lines[line_index][char_index + 1] == "@":
+                    if char_index == 0:
+                        lines[line_index] = lines[line_index][1:]
+                    else:
+                        lines[line_index] = lines[line_index][0:char_index - 1] + lines[line_index][char_index + 1:]
+            break  # fall through means line cannot match escape sequence
+
 @dataclass
 class DefinitionCommand:
     """
@@ -741,6 +757,7 @@ class DocumentationAggregator(CMakeListener):
                         # and remove the temporary command object from the documented stack
                         self.documented.pop()
 
+            clean_escaped_command_lines(cleaned_lines)
             if not self.process_cmake_invocation(invocation_ctx, cleaned_lines) and ctx not in self.consumed:
                 self.consumed.append(invocation_ctx)
         except Exception as e:
@@ -764,6 +781,7 @@ class DocumentationAggregator(CMakeListener):
 
         self.consumed.append(ctx)
         cleaned_lines = clean_comment_lines(ctx)
+        clean_escaped_command_lines(cleaned_lines)
 
         # process the doc-comment command as free/dangling
         documented_size_before = len(self.documented)
