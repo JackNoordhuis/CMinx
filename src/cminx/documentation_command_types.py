@@ -71,6 +71,14 @@ class AbstractDocumentationCommand(DocumentationType, ABC):
     Generic `TypeVar` constrained to children of `AbstractDocumentationCommand`.
     """
 
+    @staticmethod
+    def must_be_only_command() -> bool:
+        return False
+
+    @staticmethod
+    def must_be_unique_per_comment() -> bool:
+        return True
+
     @abstractmethod
     def preprocess(self, ctx: CMakeParser.Command_doccommentContext, command_stack: List[__T],
                    documented: List[DocumentationType], consumed: List[ParserRuleContext],
@@ -287,6 +295,10 @@ class Unknown_DocumentationCommand(AbstractDocumentationCommand):
     of command names to their class implementations.
     """
 
+    @staticmethod
+    def must_be_unique_per_comment() -> bool:
+        return False
+
     def preprocess(self, ctx: CMakeParser.Command_doccommentContext, command_stack: List[AbstractDocumentationCommand],
                    documented: List[DocumentationType], consumed: List[ParserRuleContext],
                    invocation_ctx: CMakeParser.Command_invocationContext | None = None) -> bool:
@@ -305,6 +317,10 @@ class ModuleDocumentationCommand(AbstractDocumentationCommand):
     """
     Represents documentation for an entire CMake module
     """
+
+    @staticmethod
+    def must_be_only_command() -> bool:
+        return True
 
     @staticmethod
     def default_module(name: str):
@@ -365,10 +381,14 @@ class NoDocDocumentationCommand(AbstractDocumentationCommand):
     from documentation.
     """
 
+    @staticmethod
+    def must_be_only_command() -> bool:
+        return True
+
     def needs_stop_command(self) -> bool:
         return DocumentationHelpers.starts_invocation_block(self.cmake_command)
 
-    def stop_command(self) -> str | None:
+    def get_stop_command(self) -> str | None:
         return DocumentationHelpers.end_invocation_block_command_for(self.cmake_command)
 
     def preprocess(self, ctx: CMakeParser.Command_doccommentContext, command_stack: List[AbstractDocumentationCommand],

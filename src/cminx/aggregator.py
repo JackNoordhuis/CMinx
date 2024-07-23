@@ -620,11 +620,31 @@ class DocumentationAggregator(CMakeListener):
             cleaned_lines,
             get_cmake_command_name(invocation_ctx) if not (invocation_ctx is None) else ""
         )
+        num_commands_processed = 0
+        num_command_types: dict[str, int] = {}  # tracks the number of commands from each type
         unrelated_to_invocation = invocation_ctx is None
         for command in found_commands:
+            abs_line_num = ctx.start.line + command.start_line_offset
+            if command.must_be_only_command() and num_commands_processed > 0:
+                self.logger.error(f"Found `@{command.name}` command in doc-comment with other commands on line "
+                                  f"#{abs_line_num}. `@{command.name}` commands must be the only command found in "
+                                  "a doc-comment for processing to work as expected. Therefore, this command will "
+                                  "not be processed.")
+                continue
+
+            if command.name not in num_command_types.keys():
+                num_command_types[command.name] = 0
+            if command.must_be_unique_per_comment() and num_command_types[command.name] > 0:
+                self.logger.error(f"Found multiple `@{command.name}` commands in doc-comment on line "
+                                  f"#{abs_line_num}. `@{command.name}` commands must appear at most once per "
+                                  "doc-comment for processing to work as expected. Therefore, this command will "
+                                  "not be processed.")
+                continue
             if command.preprocess(ctx, self.documentation_command_stack, self.documented, self.consumed,
                                   invocation_ctx):
                 unrelated_to_invocation = True
+            num_commands_processed += 1
+            num_command_types[command.name] += 1
 
         return unrelated_to_invocation
 
